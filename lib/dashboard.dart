@@ -369,6 +369,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               'maxPower': specs['maxPower']!,
               'engine': specs['engine']!,
               'acceleration': specs['acceleration']!,
+
             });
 
             print('Added car model: $carTitle with specs: ${specs.toString()}');
@@ -636,7 +637,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           screenWidth: screenWidth,
                           screenHeight: screenHeight,
                           isFullWidth: true,
-                        ),
+                          slug:'Mark-I',
+                                                  ),
                       if (carModels.length > 1)
                         SizedBox(
                             height:
@@ -647,6 +649,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           screenWidth: screenWidth,
                           screenHeight: screenHeight,
                           isFullWidth: true,
+                          slug: 'Mark-II',
                         ),
                     ],
                   )
@@ -658,6 +661,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             car: carModels[0],
                             screenWidth: screenWidth,
                             screenHeight: screenHeight,
+                          slug: 'Mark-I',
                           ),
                         ),
                       if (carModels.length > 1)
@@ -668,6 +672,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             car: carModels[1],
                             screenWidth: screenWidth,
                             screenHeight: screenHeight,
+                            slug: 'Mark-II',
                           ),
                         ),
                     ],
@@ -685,6 +690,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 isFullWidth: true,
                 screenWidth: screenWidth,
                 screenHeight: screenHeight,
+                slug: 'Mark-IV',
               ),
             ),
           ],
@@ -1030,13 +1036,16 @@ class CarCard extends StatelessWidget {
   final bool isFullWidth;
   final double screenWidth;
   final double screenHeight;
-
+  final String slug;
+   
   const CarCard({
     Key? key,
     required this.car,
     this.isFullWidth = false,
     required this.screenWidth,
     required this.screenHeight,
+    required this.slug,
+   
   }) : super(key: key);
 
   @override
@@ -1145,7 +1154,7 @@ class CarCard extends StatelessWidget {
             child: SizedBox(
               width: isFullWidth ? screenWidth * 0.5 : screenWidth * 0.7,
               child: _buildButton(
-                  'Order Now', orderNowColor, verticalPadding, context),
+                  'Order Now', orderNowColor, verticalPadding, context,slug,car),
             ),
           ),
         ],
@@ -1154,11 +1163,11 @@ class CarCard extends StatelessWidget {
   }
 
   Widget _buildButton(
-      String text, Color color, double verticalPadding, BuildContext context) {
+      String text, Color color, double verticalPadding, BuildContext context,String slug,  Map<String, dynamic> car) {
     return ElevatedButton(
       onPressed: () {
         Navigator.push(context,
-            MaterialPageRoute(builder: (context) => CarConfiguratorScreen()));
+            MaterialPageRoute(builder: (context) => CarConfiguratorScreen(slug: slug,car: car,)));
       },
       style: ElevatedButton.styleFrom(
         backgroundColor: color,
