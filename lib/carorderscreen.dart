@@ -4,7 +4,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:math' as math;
 
-// Data Models (unchanged from your provided code)
+// Data Models (unchanged)
 class Package {
   final String id;
   final String name;
@@ -171,7 +171,7 @@ class Feature {
   }
 }
 
-// ApiService (updated to handle null safety and API errors)
+// ApiService (enhanced error handling)
 class ApiService {
   static const String baseUrl = 'http://178.128.150.238';
 
@@ -195,10 +195,11 @@ class ApiService {
         log('Car features for $package/$slug: $responseData');
         return FeatureResponse.fromJson(responseData);
       } else {
+        log('Failed to load features for $package/$slug: Status ${response.statusCode}, Body: ${response.body}');
         throw Exception('Failed to load features: ${response.statusCode}');
       }
     } catch (e) {
-      log('Error fetching features: $e');
+      log('Error fetching features for $package/$slug: $e');
       throw Exception('Error fetching features: $e');
     }
   }
@@ -341,6 +342,8 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
   String? errorMessage;
   final ApiService apiService = ApiService();
   String? carImageUrl;
+  String? lastValidPackage; // Track last valid package
+  List<Feature> lastValidFeatures = []; // Store last valid features
 
   @override
   void initState() {
@@ -350,6 +353,7 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
       duration: const Duration(seconds: 8),
     )..repeat();
     carImageUrl = apiService.ensureCompleteImageUrl(widget.car['image'] as String?);
+    lastValidPackage = selectedPackage;
     fetchData();
   }
 
@@ -366,13 +370,26 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
     });
 
     try {
-      final featureResponse = await apiService.getFeatures(selectedPackage, widget.slug);
+      // Fetch features, fallback to last valid features if fails
+      FeatureResponse featureResponse;
+      try {
+        featureResponse = await apiService.getFeatures(selectedPackage, widget.slug);
+        setState(() {
+          features = featureResponse.data;
+          lastValidFeatures = features; // Update last valid features
+          lastValidPackage = selectedPackage; // Update last valid package
+        });
+      } catch (e) {
+        log('Failed to fetch features for $selectedPackage, using last valid features');
+        features = lastValidFeatures; // Use last valid features
+        errorMessage = 'Features unavailable for this package. Showing last valid configuration.';
+      }
+
       final packageResponse = await apiService.getPackages(widget.slug);
       final carResponse = await apiService.getCarDetails(widget.slug);
       final sectionResponse = await apiService.getFeatureSections();
 
       setState(() {
-        features = featureResponse.data;
         packages = packageResponse;
         car = carResponse;
         featureSections = sectionResponse;
@@ -407,9 +424,7 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
         if (feature.type == 'radiobox' && feature.selectedOption != null) {
           if (feature.selectedOption == feature.option1) {
             price += double.tryParse(feature.option1Price) ?? 0.0;
-          } else if (feature.selectedOption == feature.option2
-
-) {
+          } else if (feature.selectedOption == feature.option2) {
             price += double.tryParse(feature.option2Price) ?? 0.0;
           }
         }
@@ -729,7 +744,7 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
                       Text(
                         errorMessage!,
                         style: TextStyle(
-                          color: Colors.red,
+                          color: Colors.yellow, // Changed to yellow for warning
                           fontSize: size.width * 0.04,
                         ),
                       ),
