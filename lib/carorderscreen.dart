@@ -4,6 +4,8 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:shared_preferences/shared_preferences.dart';
+
 // Data Models (unchanged)
 class Package {
   final String id;
@@ -171,9 +173,28 @@ class Feature {
   }
 }
 
-// ApiService (enhanced error handling)
+// ApiService (enhanced with new reservation APIs)
+// ApiService
 class ApiService {
   static const String baseUrl = 'http://178.128.150.238';
+
+  // Get bearer token from SharedPreferences
+  Future<String?> getBearerToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('access_token');
+  }
+
+  // Get user ID from SharedPreferences
+  Future<String?> getUserId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('user_id');
+  }
+
+  // Get user email from SharedPreferences
+  Future<String?> getUserEmail() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('user_email');
+  }
 
   String ensureCompleteImageUrl(String? imagePath) {
     if (imagePath == null) return '';
@@ -183,7 +204,7 @@ class ApiService {
     return '$baseUrl$imagePath';
   }
 
-  Future<FeatureResponse> getFeatures(String package, String slug) async {
+ Future<FeatureResponse> getFeatures(String package, String slug) async {
     final url = Uri.parse('$baseUrl/auth/api/features/$package/$slug/');
     try {
       final response = await http.get(
@@ -279,41 +300,161 @@ class ApiService {
     }
   }
 
-  Future<bool> submitReservation({
-    required String carModel,
-    required String package,
-    required double price,
-    required List<Feature> selectedFeatures,
+  // Create a new reservation
+ Future<Map<String, dynamic>> createReservation({
+  required String title,
+  required String price,
+  required String carModel,
+  required String packageId,
+  required String userId,
+  String extraFeatures = 'None',
+  String status = 'pending',
+}) async {
+  final url = Uri.parse('$baseUrl/auth/booked-packages/create/');
+  try {
+    final token = await getBearerToken();
+    if (token == null) {
+      throw Exception('Authentication token not available');
+    }
+
+    // Validate and format price
+    final formattedPrice = double.parse(price).toStringAsFixed(2);
+    if (formattedPrice.replaceAll('.', '').length > 10) {
+      throw Exception('Price exceeds 10 digits: $formattedPrice');
+    }
+
+    final request = http.MultipartRequest('POST', url)
+      ..headers['Authorization'] = 'Bearer $token'
+      ..fields['title'] = title
+      ..fields['price'] = formattedPrice
+      ..fields['car_model'] = carModel
+      ..fields['package'] = packageId
+      ..fields['extra_features'] = extraFeatures
+      ..fields['status'] = status
+      ..fields['user'] = userId;
+
+    final response = await request.send();
+    final responseBody = await response.stream.bytesToString();
+    final responseData = json.decode(responseBody);
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      log('Reservation created: $responseBody');
+      return responseData;
+    } else {
+      log('Failed to create reservation: Status ${response.statusCode}, Body: $responseBody');
+      throw Exception('Failed to create reservation: ${response.statusCode}');
+    }
+  } catch (e) {
+    log('Error creating reservation: $e');
+    throw Exception('Error creating reservation: $e');
+  }
+}
+
+Future<bool> processReservationPayment({
+  required String userId,
+  required String reservationId,
+}) async {
+  final url = Uri.parse('$baseUrl/car/process-reservation/');
+  try {
+    final token = await getBearerToken();
+    if (token == null) {
+      throw Exception('Authentication token not available');
+    }
+
+    final response = await http.post(
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
+      body: json.encode({
+        'user_id': userId,
+        'reservation_id': reservationId,
+      }),
+    );
+
+    final responseBody = response.body;
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      log('Reservation payment processed: $responseBody');
+      return true;
+    } else {
+      log('Failed to process reservation payment: Status ${response.statusCode}, Body: $responseBody');
+      throw Exception('Failed to process reservation payment: ${response.statusCode}');
+    }
+  } catch (e) {
+    log('Error processing reservation payment: $e');
+    throw Exception('Error processing reservation payment: $e');
+  }
+}
+
+  // Create package checkout session
+  Future<Map<String, dynamic>> createCheckoutSession({
+    required String customerId,
+    required String packageId,
+    required String productName,
+    required String userEmail,
+    required String imageUrl,
+    required double unitAmount,
   }) async {
-    final url = Uri.parse('$baseUrl/auth/api/reservation/create/');
+    final url = Uri.parse('$baseUrl/car/create-package-checkout-session/');
     try {
+      final token = await getBearerToken();
+      if (token == null) {
+        throw Exception('Authentication token not available');
+      }
+
       final response = await http.post(
         url,
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
         body: json.encode({
-          'car_model': carModel,
-          'package': package,
-          'price': price.toString(),
-          'features': selectedFeatures
-              .map((f) => {
-                    'id': f.id,
-                    'name': f.name,
-                    'selected_option': f.selectedOption,
-                  })
-              .toList(),
+          'customer_id': customerId,
+          'line_items': [
+            {
+              'price_data': {
+                'currency': 'usd',
+                'product_data': {
+                  'name': productName,
+                  'description': 'Payment for $productName Package of $productName',
+                  'images': [imageUrl],
+                },
+                'unit_amount': (unitAmount * 100).toInt(), // Convert to cents
+              },
+              'quantity': 1,
+            },
+          ],
+          'package_id': packageId,
+          'success_url': 'http://178.128.150.238/car/reservation_success/$packageId/',
+          'cancel_url': 'http://178.128.150.238/car/reservation-checkout/$packageId/',
+          'metadata': {
+            'product_name': productName,
+            'package_id': packageId,
+            'user_email': userEmail,
+            'description': 'Payment for $productName Package of $productName',
+          },
+          'payment_intent_data': {
+            'description': 'Payment for $productName Package of $productName',
+            'metadata': {
+              'product_name': productName,
+            },
+          },
         }),
       );
+
       if (response.statusCode == 200) {
-        final Map<String, dynamic> responseData = json.decode(response.body);
-        log('Reservation response: $responseData');
-        return true;
+        final responseData = json.decode(response.body);
+        log('Checkout session created: $responseData');
+        return responseData;
       } else {
-        log('Failed to submit reservation: ${response.body}');
-        throw Exception('Failed to submit reservation: ${response.statusCode}');
+        log('Failed to create checkout session: Status ${response.statusCode}, Body: ${response.body}');
+        throw Exception('Failed to create checkout session: ${response.statusCode}');
       }
     } catch (e) {
-      log('Error submitting reservation: $e');
-      throw Exception('Error submitting reservation: $e');
+      log('Error creating checkout session: $e');
+      throw Exception('Error creating checkout session: $e');
     }
   }
 }
@@ -342,8 +483,8 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
   String? errorMessage;
   final ApiService apiService = ApiService();
   String? carImageUrl;
-  String? lastValidPackage; // Track last valid package
-  List<Feature> lastValidFeatures = []; // Store last valid features
+  String? lastValidPackage;
+  List<Feature> lastValidFeatures = [];
 
   @override
   void initState() {
@@ -370,18 +511,17 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
     });
 
     try {
-      // Fetch features, fallback to last valid features if fails
       FeatureResponse featureResponse;
       try {
         featureResponse = await apiService.getFeatures(selectedPackage, widget.slug);
         setState(() {
           features = featureResponse.data;
-          lastValidFeatures = features; // Update last valid features
-          lastValidPackage = selectedPackage; // Update last valid package
+          lastValidFeatures = features;
+          lastValidPackage = selectedPackage;
         });
       } catch (e) {
         log('Failed to fetch features for $selectedPackage, using last valid features');
-        features = lastValidFeatures; // Use last valid features
+        features = lastValidFeatures;
         errorMessage = 'Features unavailable for this package. Showing last valid configuration.';
       }
 
@@ -451,26 +591,99 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
     return section.name;
   }
 
-  Future<void> reserveCar() async {
-    try {
-      final success = await apiService.submitReservation(
-        carModel: widget.slug,
-        package: selectedPackage,
-        price: totalPrice,
-        selectedFeatures: features.where((f) => f.included || f.checked).toList(),
-      );
-      if (success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Reservation successful!')),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to reserve: $e')),
-      );
-    }
-  }
+ Future<void> reserveCar() async {
+  try {
+    setState(() {
+      isLoading = true;
+    });
 
+    final selectedPackageData = packages.firstWhere(
+      (p) => p.packageType == selectedPackage,
+      orElse: () => Package(
+        id: '',
+        name: 'Default Package',
+        description: '',
+        reserveAmount: '100.00',
+        packageType: selectedPackage,
+        baseAmount: '22000.00',
+        discountAmount: '25000.00',
+      ),
+    );
+
+    // // Validate totalPrice
+    // if (totalPrice.toString().replaceAll('.', '').length > 10) {
+    //   throw Exception('Total price exceeds 10 digits: $totalPrice');
+    // }
+
+    // Retrieve user data from SharedPreferences
+    final userId = await apiService.getUserId();
+    final userEmail = await apiService.getUserEmail();
+
+    if (userId == null || userEmail == null) {
+      throw Exception('User not authenticated');
+    }
+
+    // Use a customer ID (this should ideally come from your backend or user profile)
+    const customerId = 'cus_SF9yK3BWC5QkNV'; // Replace with actual customer ID
+
+    // Step 1: Create reservation
+    final reservationResponse = await apiService.createReservation(
+      title: selectedPackage,
+      price: totalPrice.toStringAsFixed(2),
+      carModel: car!.id,
+      packageId: selectedPackageData.id,
+      userId: userId,
+      extraFeatures: features
+          .where((f) => f.checked && !f.included)
+          .map((f) => f.name)
+          .join(', '),
+    );
+
+    final reservationId = reservationResponse['id'];
+    log('Reservation created successfully with ID: $reservationId');
+
+    // Step 2: Process reservation payment
+    log('Attempting to process payment for reservationId: $reservationId');
+    final paymentSuccess = await apiService.processReservationPayment(
+      userId: userId,
+      reservationId: reservationId,
+    );
+
+    if (!paymentSuccess) {
+      throw Exception('Failed to process reservation payment');
+    }
+
+    log('Reservation payment processed successfully');
+
+    // Step 3: Create checkout session
+    final checkoutResponse = await apiService.createCheckoutSession(
+      customerId: customerId,
+      packageId: selectedPackageData.id,
+      productName: widget.car['name']?.toString() ?? 'Car',
+      userEmail: userEmail,
+      imageUrl: carImageUrl ?? 'https://genz40.com/static/images/genz/mark1-builder4.png',
+      unitAmount: double.tryParse(selectedPackageData.reserveAmount) ?? 100.00,
+    );
+
+    if (checkoutResponse['is_success'] == true) {
+      final checkoutUrl = checkoutResponse['checkout_url'];
+      log('Navigate to checkout URL: $checkoutUrl');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Reservation successful! Please complete payment at: $checkoutUrl')),
+      );
+    } else {
+      throw Exception(checkoutResponse['message'] ?? 'Failed to create checkout session');
+    }
+  } catch (e) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Failed to reserve: $e')),
+    );
+  } finally {
+    setState(() {
+      isLoading = false;
+    });
+  }
+}
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
@@ -516,7 +729,6 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
                   textAlign: TextAlign.center,
                 ),
                 SizedBox(height: size.height * 0.02),
-                // Package Selection
                 if (packages.isNotEmpty)
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -538,7 +750,6 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
                 else
                   const Center(child: Text('No packages available', style: TextStyle(color: Colors.white))),
                 SizedBox(height: size.height * 0.03),
-                // Car Image and Estimated Delivery
                 SizedBox(
                   height: isLandscape ? size.height * 0.35 : size.height * 0.3,
                   child: Center(
@@ -606,7 +817,6 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
                   ),
                   textAlign: TextAlign.center,
                 ),
-                // Price Display
                 Padding(
                   padding: EdgeInsets.symmetric(
                       horizontal: size.width * 0.05, vertical: size.height * 0.01),
@@ -640,7 +850,6 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
                     ],
                   ),
                 ),
-                // Car Specs from Dashboard
                 Padding(
                   padding: EdgeInsets.symmetric(
                       horizontal: size.width * 0.05, vertical: size.height * 0.01),
@@ -735,7 +944,6 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
                     ],
                   ),
                 ),
-                // Dynamic Features
                 if (isLoading)
                   const Center(child: CircularProgressIndicator(color: Colors.white))
                 else if (errorMessage != null)
@@ -744,7 +952,7 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
                       Text(
                         errorMessage!,
                         style: TextStyle(
-                          color: Colors.yellow, // Changed to yellow for warning
+                          color: Colors.yellow,
                           fontSize: size.width * 0.04,
                         ),
                       ),
@@ -843,7 +1051,6 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
                       }).toList(),
                     );
                   }),
-                // Payment Schedule (static, as no API data provided)
                 Container(
                   margin: EdgeInsets.all(size.width * 0.025),
                   padding: EdgeInsets.all(size.width * 0.04),
@@ -949,7 +1156,6 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
                     ],
                   ),
                 ),
-                // Price Summary (partially dynamic)
                 Container(
                   padding: EdgeInsets.symmetric(
                       horizontal: size.width * 0.05, vertical: size.height * 0.01),
@@ -995,7 +1201,7 @@ class _CarConfiguratorScreenState extends State<CarConfiguratorScreen>
                             ),
                           ),
                           Text(
-                            '\$${totalPrice.toStringAsFixed(2)}', // No tax logic in API
+                            '\$${totalPrice.toStringAsFixed(2)}',
                             style: TextStyle(
                               color: const Color.fromARGB(255, 225, 224, 224),
                               fontSize: size.width * 0.032,
